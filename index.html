@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Genômica II</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #0f172a; /* Slate 900 base */
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            overflow: hidden; 
+            touch-action: none; /* Desativa zoom nativo indesejado no mobile */
+            color: #f8fafc;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        #gameCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #38bdf8;
+            font-size: 1.5rem;
+            font-weight: bold;
+            z-index: -1;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Carregando Genômica II...</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Estados do Jogo
+        const STATE_MENU = 'MENU';
+        const STATE_ACHIEVEMENTS = 'ACHIEVEMENTS';
+        const STATE_PLAYING = 'PLAYING';
+        const STATE_FEEDBACK = 'FEEDBACK';
+        const STATE_GAMEOVER = 'GAMEOVER';
+
+        let currentState = STATE_MENU;
+        let currentMode = '';
+        let mouseX = 0, mouseY = 0;
+        let activeButtons = [];
+        let particles = [];
+
+        // Lógica do Quiz
+        let activeQuestions = [];
+        let currentQuestionIndex = 0;
+        let score = 0;
+        let correctAnswersCount = 0;
+        let timerSeconds = 60.0;
+        let lastTime = 0;
+        let currentOptions = [];
+        let isCurrentAnswerCorrect = false;
+        let timeBonusEarned = 0;
+
+        const achievements = {
+            firstBlood: { id: 'firstBlood', name: 'First Blood', desc: 'Acertou a 1ª questão de uma sessão.', unlocked: false },
+            speedster: { id: 'speedster', name: 'Speedster', desc: 'Respondeu corretamente em 5s ou menos.', unlocked: false },
+            transcripter: { id: 'transcripter', name: 'Transcripter', desc: 'Gabaritou o modo Transcriptoma.', unlocked: false },
+            proteomico: { id: 'proteomico', name: 'Proteômico', desc: 'Gabaritou o modo Proteômica.', unlocked: false },
+            biologo: { id: 'biologo', name: 'Biólogo Sistemático', desc: 'Gabaritou o modo Biologia de Sistemas.', unlocked: false },
+            pangenoma: { id: 'pangenoma', name: 'PANGENOMA', desc: 'Desbloqueou TODAS as conquistas.', unlocked: false }
+        };
+
+        let notificationQueue = [];
+        let currentNotification = null;
+        let notificationTimer = 0;
+
+        const dbTranscriptoma = [
+            {q: 'Todas as células de um indivíduo carregam o mesmo genoma?', a: 'Sim, neurônio e linfócito têm a mesma sequência de DNA, a diferença está na expressão.', err: ['Não, o genoma muda conforme o tecido.', 'Sim, mas apenas em células tronco.', 'Não, células maduras perdem trechos de DNA.'], just: 'A diferença não está no que está escrito (genoma), mas em que parte é lida, quando e quanto.'},
+            {q: 'O que caracteriza a genômica funcional?', a: 'Atribuir função aos elementos do genoma em escala genômica, medindo a atividade dos elementos.', err: ['Sequenciar o DNA de diferentes espécies isoladas.', 'Mapear estruturalmente o catálogo estático de genes.', 'Estudar apenas as proteínas de uma célula de cada vez.'], just: 'Mede-se atividade (quais elementos estão em uso em uma célula/condição), não a sequência estrutural estática.'},
+            {q: 'Sobre a releitura do dogma central como camadas ômicas:', a: 'A epigenômica e a regulação não são um andar a mais; elas atravessam e decidem o fluxo entre todas as camadas.', err: ['A epigenômica atua apenas após a síntese de proteínas.', 'A transcrição ocorre de forma cega, sem controle epigenético.', 'A metabolômica dita diretamente a sequência do genoma.'], just: 'As marcas epigenéticas e a regulação decidem se o DNA vira RNA e se o RNA vira proteína, controlando o fluxo.'},
+            {q: 'Quantos pontos de controle existem classicamente entre o DNA e a proteína ativa?', a: 'Nove pontos de controle, sendo os pontos 1 a 6 estudados pelo transcritoma.', err: ['Três pontos: transcrição, tradução e degradação.', 'Cinco pontos, e todos pertencem ao proteoma.', 'Dez pontos, sendo a maioria exclusividade do genoma estrutural.'], just: 'Existem 9 pontos. Do 1 ao 6 abordam desde a estrutura da cromatina até a degradação do RNA (transcriptoma).'},
+            {q: 'Qual o método padrão atual para medir a acessibilidade da cromatina?', a: 'ATAC-seq, que utiliza a transposase Tn5 para cortar o DNA exposto.', err: ['ChIP-seq para detectar todas as histonas.', 'Microarranjo hibridizado contra sondas de RNA.', 'scRNA-seq com depleção ribossomal.'], just: 'O ATAC-seq insere adaptadores com a Tn5 apenas nas regiões de cromatina aberta (eucromatina), permitindo mapear os sítios expostos.'},
+            {q: 'Qual a característica dos promotores de RNA-polimerase II no genoma humano?', a: 'Apenas 10-15% têm TATA box; a maioria é rica em ilhas CpG e usa múltiplos sítios de início.', err: ['Todos os promotores codificantes possuem TATA box para ativação.', 'A TATA box inibe a ligação dos fatores gerais de transcrição.', 'Os fatores gerais isoladamente garantem toda a especificidade tissular.'], just: 'Diferente dos livros didáticos antigos, a TATA box é minoria. A especificidade é dada pela combinação de fatores específicos.'},
+            {q: 'O que define a lógica combinatória da regulação por fatores de transcrição?', a: 'Um único fator regula muitos genes, e um mesmo gene responde à combinação de vários fatores simultâneos.', err: ['Lógica linear: um fator ativa exclusivamente um único gene no genoma.', 'Um fator atua sempre como ativador forte, sem depender dos parceiros.', 'Eles substituem a Polimerase no promotor em condições de estresse.'], just: 'A especificidade vem do contexto: os parceiros co-ligados decidem se aquele fator ativará ou reprimirá aquele gene naquela célula.'},
+            {q: 'Quais eventos ocorrem de forma acoplada durante a transcrição do RNA?', a: 'Capping 5\', Splicing e Poliadenilação 3\'.', err: ['Dobramento de proteína, Tradução e Ubiquitinação.', 'Metilação do DNA, Acetilação e fosforilação.', 'Adição de promotores, Exon skipping e lise.'], just: 'O RNA nasce já sendo processado pela maquinaria que viaja acoplada ao CTD fosforilado da RNA-polimerase II.'},
+            {q: 'Splicing alternativo gera mais proteínas do que os genes anotados. Qual é o evento mais comum em humanos?', a: 'O "Exon skipping" (salto de éxon), respondendo por cerca de 40% dos eventos.', err: ['A retenção permanente de íntrons em todos os transcritos adultos.', 'Sítio 5\' alternativo, onde o códon de parada é sempre removido.', 'Éxons mutuamente exclusivos que dobram o tamanho da fita do DNA.'], just: 'Mais de 90% dos genes humanos multiéxon sofrem splicing alternativo, sendo o salto de éxon (exon skipping) o mais predominante.'},
+            {q: 'Qual a relação da metilação do DNA com o corpo do gene e o promotor?', a: 'No promotor, associa-se a silenciamento; mas no corpo do gene, correlaciona-se com transcrição ativa.', err: ['Sempre inativa o gene, independentemente de onde ocorrer na sequência.', 'No corpo do gene, a metilação bloqueia a ação do ribossomo.', 'A metilação remove histonas da cromatina irreversivelmente.'], just: 'A metilação não é apenas "liga/desliga". No corpo do gene, ela previne a iniciação espúria e está ligada a transcrição ativa.'},
+            {q: 'Quais os 3 qualificadores obrigatórios para garantir a reprodutibilidade de um experimento de transcriptoma?', a: 'Uma amostra definida, um momento específico e uma condição clara.', err: ['Um genoma purificado, uma enzima e um sequenciador de nova geração.', 'RNA mensageiro, RNA ribossomal e proteínas ativas.', 'O alinhamento bioinformático, o heatmap e o PCA plot.'], just: 'O transcriptoma é dinâmico (muda em minutos). Sem definir onde, quando e sob que condição, a medida perde sentido e não é comparável.'},
+            {q: 'Por que a contagem em "bulk RNA-seq" pode ser ilusória para entender regulação?', a: 'Porque o tecido é uma mistura heterogênea; a média esconde que um gene pode mudar apenas em uma subpopulação celular.', err: ['Porque os algoritmos descartam todas as leituras de genes fracamente expressos.', 'Porque o RNA extraído do tecido inteiro degrada instantaneamente.', 'Porque o bulk RNA-seq apenas consegue ler a sequência do genoma do hospedeiro.'], just: 'Em bulk, a expressão é a média ponderada de milhares de células; para resolver isso, recorre-se ao scRNA-seq (célula única).'}
+        ];
+
+        const dbProteomica = [
+            {q: 'Qual o papel fundamental da proteômica frente ao transcritoma?', a: 'Medir a realização em vez da intenção: proteínas são os executores da função, e sua abundância correlaciona-se apenas moderadamente com o mRNA.', err: ['Provar que a quantidade de mRNA é sempre idêntica à quantidade de proteína ativa.', 'Mapear a fita dupla do DNA para prever a estabilidade dos éxons.', 'Contar apenas as chaperonas responsáveis pelo enovelamento no núcleo.'], just: 'A correlação (RNA vs Proteína) é moderada devido a viés de tradução, meia-vida, sequestro e modificações pós-traducionais.'},
+            {q: 'O que caracteriza a estrutura química dos aminoácidos usados pelas células?', a: 'Eles possuem um carbono alfa quiral ligado a quatro grupos distintos, aparecendo apenas na forma L (com exceção da glicina, aquiral).', err: ['Possuem apenas cadeias laterais ácidas e sempre adotam a conformação D na natureza.', 'São formados por bases nitrogenadas empilhadas por pontes de hidrogênio.', 'O carbono central é inerte, tornando impossível a formação de polímeros longos.'], just: 'Os 20 aminoácidos têm estereoquímica L. A glicina é a única exceção aquiral pois tem dois hidrogênios no carbono alfa.'},
+            {q: 'O que define o Ponto Isoelétrico (pI) de uma proteína?', a: 'O pH em que a carga elétrica líquida da proteína é zero (forma zwitteriônica máxima).', err: ['A temperatura limite onde a proteína perde permanentemente seu dobramento.', 'O comprimento exato em nanômetros da sua estrutura primária.', 'O ponto onde a tripsina consegue clivar a cadeia sem restrições.'], just: 'Abaixo do pI a proteína fica positiva (cátion), acima fica negativa (ânion). Esse princípio é a base da focalização isoelétrica (1D no gel 2D).'},
+            {q: 'Por que o dobramento da cadeia proteica é um problema computacional minimamente tratável?', a: 'Devido à ligação peptídica, que possui caráter parcial de dupla ligação, sendo plana e rígida e restringindo o giro.', err: ['Porque as interações hidrofóbicas atraem aleatoriamente todos os átomos para o centro.', 'Devido à total liberdade de rotação de todos os ângulos do esqueleto covalente.', 'Porque a tripsina corta a proteína em tamanhos idênticos previsíveis.'], just: 'A planaridade e rigidez da ligação peptídica reduzem imensamente o espaço de conformações possíveis da cadeia.'},
+            {q: 'O que é o efeito "moonlighting" em proteínas?', a: 'Ocorre quando a mesma cadeia polipeptídica muda de função ao mudar de parceiro, compartimento celular ou modificação.', err: ['A destruição total de uma proteína pelas enzimas da lua do proteassoma.', 'O processo exclusivo de iluminação de proteínas na fluorescência do Western Blot.', 'Quando o RNA pula o ribossomo e executa a função catalítica sozinho.'], just: 'Uma proteína não está presa a um "destino" ou função única. Parceiros, localização e PTMs mudam o papel dela dinamicamente.'},
+            {q: 'Por que o proteoma humano excede brutalmente o número de genes codificantes anotados (~19.400)?', a: 'Devido ao splicing alternativo, processamento proteolítico e aos milhões de sítios de modificações pós-traducionais (PTMs) possíveis.', err: ['Porque o genoma esconde centenas de milhares de genes em regiões teloméricas mortas.', 'Porque ribossomos geram sequências aleatórias de aminoácidos sem molde de RNA.', 'Porque a RNA polimerase introduz mutações propositais durante o alongamento.'], just: 'Um gene não faz uma proteína, ele faz uma família de "proteoformas". Só de sítios de modificações curados, há mais de 2,7 milhões.'},
+            {q: 'Na técnica de Espectrometria de Massas, o que o analisador mede de forma primária e direta?', a: 'Mede unicamente a grandeza física da razão massa/carga (m/z) dos íons.', err: ['A sequência linear de nucleotídeos da proteína alvo.', 'A estrutura cristalina tridimensional exata e a cor das cadeias polares.', 'A quantidade de ligações peptídicas que resistiram ao pulso de laser.'], just: 'Tudo em proteômica MS (identidade, quantidade, sequência) é uma inferência estatística computacional baseada puramente nos gráficos de m/z.'},
+            {q: 'Qual o principal "gargalo" ou desafio analítico na proteômica de misturas complexas, como o plasma sanguíneo?', a: 'A gigantesca faixa dinâmica (>10 ordens de grandeza), onde proteínas hiper-abundantes como a albumina mascaram os alvos raros.', err: ['A ausência total de proteases para picotar a amostra.', 'A carga elétrica das proteínas do sangue desarmar o espectrômetro.', 'O fato das proteínas serem invisíveis sob a luz ultravioleta do laser.'], just: 'A albumina e imunoglobulinas compõem até 75% da massa do plasma. Marcadores tumorais importantes estão milhares de vezes abaixo, sumindo no ruído.'},
+            {q: 'Como atua a Eletroforese Bidimensional (2D-GE)?', a: 'Aplica duas propriedades ortogonais: separa primeiro pelo Ponto Isoelétrico (IEF) e depois pela Massa Molecular (SDS-PAGE).', err: ['Isola proteínas primeiro pela densidade no ultracentrifugador e depois por afinidade magnética.', 'Separa primeiro pela carga positiva pura e depois as digere com enzimas no próprio gel.', 'Filtra os peptídeos por espectrometria de massa antes de aplicar o gel linear.'], just: 'A combinação do IEF (pI) com o SDS-PAGE (massa) cria um grid visual poderoso onde cada mancha revela uma proteoforma distinta.'},
+            {q: 'O que descreve a abordagem Bottom-up (Shotgun) dominante na proteômica?', a: 'Digerir as proteínas complexas com tripsina gerando peptídeos (7-25 resíduos) mais fáceis de analisar no espectrômetro, reconstruindo o resultado por inferência computacional.', err: ['Analisar as proteínas intactas colossais sem nenhuma quebra, mantendo as isoformas originais completas no vácuo (Top-down).', 'Hibridizar a amostra em lâminas (microarranjos) contendo milhões de anticorpos fluorescentes.', 'Sequenciar diretamente o núcleo da célula com nanotecnologia e ignorar as proteínas citoplasmáticas.'], just: 'A tripsina quebra após Arginina (R) e Lisina (K). Analisar os peptídeos curtos gerados é incrivelmente mais eficiente para o hardware atual.'},
+            {q: 'O que a fragmentação MS2 revela durante a análise de peptídeos?', a: 'Gera as séries de íons b e y quebrando a ligação peptídica; a distância (diferença de massa) entre os picos determina a sequência de aminoácidos.', err: ['O ponto exato onde a proteína estava operando dentro do retículo endoplasmático.', 'A cor e as dobras hidrofóbicas da molécula mãe.', 'Transforma o peptídeo de volta em nucleotídeos de DNA originais.'], just: 'O espectro MS2 é a "impressão digital" sequencial. Cada diferença de massa entre picos adjacentes de uma série reflete a perda de um resíduo específico.'}
+        ];
+
+        const dbBiologia = [
+            {q: 'Qual o problema da abordagem puramente reducionista (deletar um gene e ver o que acontece) em biologia de sistemas?', a: 'O sistema costuma ser robusto. A ausência de fenótipo ao deletar não prova inutilidade do gene, revela a ação de vias redundantes e feedbacks.', err: ['A biologia reducionista garante sempre uma resposta binária simples e irrefutável sobre o destino da proteína.', 'Mutantes de deleção morrem imediatamente em 100% dos testes, inviabilizando experimentos.', 'Em eucariotos, a falta de qualquer gene dissolve imediatamente a parede celular externa.'], just: 'Em leveduras, a imensa maioria das deleções singulares não gera fenótipos em condições ideais devido à robustez distribuída (compensação).'},
+            {q: 'No contexto de sistemas, qual a definição que distingue "Complicado" de "Complexo"?', a: 'Um sistema complexo possui componentes não lineares e adaptativos, gerando propriedades emergentes que não podem ser previstas dissecando as partes isoladamente.', err: ['Um sistema complexo é apenas um sistema complicado que usa energia elétrica.', 'Ambos são sinônimos perfeitos na engenharia e biologia computacional moderna.', 'Um sistema complicado não pode ser consertado, enquanto o complexo obedece a regras de montagem linear.'], just: 'Um avião é complicado (montar as peças resolve). Uma célula é complexa (peças adaptam seu comportamento conforme a rede inteira).'},
+            {q: 'O que define as Propriedades de Tipo II (Propriedades Emergentes)?', a: 'São o produto das interações; funções ou comportamentos que existem no sistema todo mas não em nenhuma das peças separadas (ex: ritmo circadiano).', err: ['A soma matemática isolada da massa de cada componente, refletindo a inércia do indivíduo.', 'Propriedades secretadas no espaço extracelular que não interagem com o núcleo.', 'Apenas a cor e a textura dos tecidos biológicos expostos ao ar atmosférico.'], just: 'Tipo I é soma. Tipo II (emergente) é interação. O comportamento do conjunto transcende as capacidades isoladas dos componentes.'},
+            {q: 'Em teoria dos grafos aplicada à biologia, o que significa "Intermediação" (Betweenness) de um nó?', a: 'Quantos caminhos mínimos da rede passam por aquele nó, destacando-o como um "gargalo" crítico na conexão entre módulos distintos.', err: ['A quantidade total de ramificações (arestas) que o nó tem ligadas diretamente ao centro do núcleo.', 'O nível máximo de expressão gênica que o nó atinge antes de degradar.', 'A medida da distância física em micrômetros entre a proteína e a membrana celular.'], just: 'Nós com alta intermediação conectam sub-redes isoladas. Eles controlam o fluxo de informação cruzada na célula.'},
+            {q: 'O que difere as redes regulatórias das redes simples de interação proteína-proteína (PPI)?', a: 'A rede regulatória exige direcionamento das arestas (quem manda em quem), mostrando o fluxo da informação (fator -> gene).', err: ['A PPI exige gráficos tridimensionais, enquanto a regulatória é montada num modelo linear de texto puro.', 'Redes regulatórias só aceitam metabólitos (carboidratos e lipídios), descartando dados ômicos.', 'As arestas em PPI são sempre irreversíveis e autodestrutivas.'], just: 'Em PPI, a aresta diz apenas "eles encostam". Numa rede regulatória, a direção é a própria biologia causal: A expressa B.'},
+            {q: 'O que a aresta de "Coexpressão" indica e qual é a armadilha na sua interpretação?', a: 'Ela mede correlação matemática. O erro comum é assumir que indica obrigatoriamente interação física ou causa direta.', err: ['Prova cientificamente que um gene engoliu o outro na evolução.', 'Mostra que os produtos dos genes co-cristalizaram na mesma estrutura terciária.', 'Garante que se você deletar o nó A, o nó B imediatamente parará seu ciclo celular.'], just: 'Correlacionar não é causar. Dois genes podem coexpressar por responderem juntos a um hormônio comum, sem interagir entre si.'},
+            {q: 'Como opera a modelagem Top-down (de cima para baixo)?', a: 'Parte do ruído e da imensidão de dados ômicos para descobrir padrões e sub-redes sem hipóteses estritas prévias; entrega bons candidatos, mas peca no detalhe do mecanismo.', err: ['Seleciona 3 enzimas hiperestudadas e constrói modelos diferenciais com taxa de reação molecular precisa (bottom-up).', 'Foca apenas em microscopia óptica avançada para ver o fluxo em tempo real.', 'É uma técnica exclusiva de cirurgiões para analisar dissecções anatômicas maciças.'], just: 'O Top-down é descritivo e estatístico, desenhando o mapa macro. O Bottom-up foca no mecanicismo exato de poucos nós.'},
+            {q: 'O que é vital entender sobre a arquitetura da Gene Ontology (Ontologia Gênica)?', a: 'É um grafo direcionado redundante. Anotar um gene num termo específico automaticamente o espalha por todos os "termos pais" acima na hierarquia.', err: ['É uma lista alfabética simples no formato Excel que deleta redundâncias automaticamente.', 'Foi desenhada para garantir que cada gene receba no máximo uma única tag exclusiva de função.', 'Os nós do grafo ontológico bloqueiam qualquer interpretação humana visual.'], just: 'Por usar lógica de conjuntos (is_a, part_of), termos profundos acarretam os termos gerais. 40 "enriquecimentos" estatísticos podem significar a mesma resposta em bloco.'},
+            {q: 'Qual o papel fundamental da "medida do grau do nó (k)" em redes biológicas?', a: 'Quantificar conexões. Nós de grau elevadíssimo (hubs) são frequentemente essenciais à viabilidade celular.', err: ['Definir a temperatura ideal de hibridização do DNA alvo no chip.', 'Revelar o tamanho molecular do metabólito associado ao peso da rede.', 'Contar as repetições de aminoácidos aromáticos na cadeia isolada do citoplasma.'], just: 'A topologia de rede mostra que retirar nós periféricos causa pouco dano, mas nocautear os "Hubs" fortemente conectados fragmenta o sistema.'},
+            {q: 'No marcante artigo sobre o Interatoma do SARS-CoV-2 (2020), qual foi o foco da triagem farmacológica?', a: 'Focou nas 66 proteínas da célula humana ("drogáveis") recrutadas e sequestradas pelas proteínas do vírus, testando fármacos hospedeiro-dirigidos.', err: ['Desenvolveu supercomputadores apenas para simular a hidratação do envelope lipídico viral.', 'Almejou criar vacinas mutacionais que deletavam os ribossomos da faringe.', 'Desenhou compostos químicos que cortassem precisamente a cauda poli-A do vírus no plasma.'], just: 'Ao invés de buscar alvo nas parcas proteínas virais, eles mapearam a extensa rede humana que o vírus precisa para operar, usando bloqueadores já existentes.'},
+            {q: 'Como o estudo de coexpressão em cérebros com Alzheimer (2013) aplicou o fluxo ideal de biologia de sistemas?', a: 'Achou o módulo hiperativo (ômica top-down), inferiu o gene TYROBP como regulador mestre pela topologia da rede, e testou a hipótese in vivo com sucesso.', err: ['Deletou todos os genes cerebrais de uma só vez, medindo qual camundongo sobrevivia à cirurgia radical.', 'Aplicou apenas Bottom-up cinético, estudando uma molécula isolada de Tau por 10 anos.', 'Usou redes de transporte logístico da biologia industrial para entregar vacinas experimentais.'], just: 'Esse é o roteiro completo: Medir os cérebros (ômica) -> Modelar os módulos/rede bayesiana -> Prever TYROBP -> Validar em modelo biológico (Teste).'}
+        ];
+
+        function loadAchievements() {
+            try {
+                const saved = localStorage.getItem('GenomicaII_Achievements');
+                if (saved) {
+                    const parsed = JSON.parse(saved);
+                    for (let key in parsed) {
+                        if (achievements[key]) achievements[key].unlocked = parsed[key];
+                    }
+                }
+            } catch(e) { console.warn("Local storage desativado.", e); }
+        }
+
+        function saveAchievements() {
+            try {
+                const toSave = {};
+                for (let key in achievements) toSave[key] = achievements[key].unlocked;
+                localStorage.setItem('GenomicaII_Achievements', JSON.stringify(toSave));
+            } catch(e) {}
+        }
+
+        function unlockAchievement(id) {
+            if (!achievements[id].unlocked) {
+                achievements[id].unlocked = true;
+                notificationQueue.push(achievements[id]);
+                saveAchievements();
+            }
+        }
+
+        function checkPangenoma() {
+            if (!achievements.pangenoma.unlocked) {
+                if (achievements.firstBlood.unlocked && 
+                    achievements.speedster.unlocked && 
+                    achievements.transcripter.unlocked && 
+                    achievements.proteomico.unlocked && 
+                    achievements.biologo.unlocked) {
+                    unlockAchievement('pangenoma');
+                }
+            }
+        }
+
+        loadAchievements();
+
+        function updateNotifications() {
+            if (!currentNotification && notificationQueue.length > 0) {
+                currentNotification = notificationQueue.shift();
+                notificationTimer = 220; 
+            }
+            if (currentNotification) {
+                notificationTimer--;
+                if (notificationTimer <= 0) currentNotification = null;
+            }
+        }
+
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        }
+
+        function initParticles() {
+            particles = [];
+            const count = (window.innerWidth < 600) ? 30 : 60;
+            for (let i = 0; i < count; i++) {
+                particles.push({
+                    x: Math.random() * window.innerWidth,
+                    y: Math.random() * window.innerHeight,
+                    vx: (Math.random() - 0.5) * 0.4,
+                    vy: (Math.random() - 0.5) * 0.4,
+                    size: Math.random() * 2 + 1
+                });
+            }
+        }
+
+        function drawBackground() {
+            const cw = canvas.width;
+            const ch = canvas.height;
+            
+            ctx.fillStyle = '#0f172a';
+            ctx.fillRect(0, 0, cw, ch);
+            
+            ctx.fillStyle = 'rgba(56, 189, 248, 0.18)';
+            for (let p of particles) {
+                p.x += p.vx; p.y += p.vy;
+                if(p.x < 0) p.x = cw; if(p.x > cw) p.x = 0;
+                if(p.y < 0) p.y = ch; if(p.y > ch) p.y = 0;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        function wrapText(ctx, text, x, y, maxWidth, lineHeight, draw = true) {
+            if(!text) return 0;
+            const words = text.split(' ');
+            let line = '';
+            let startY = y;
+            let linesRendered = 0;
+            ctx.textBaseline = 'top';
+            
+            for (let n = 0; n < words.length; n++) {
+                let testLine = line + words[n] + ' ';
+                let metrics = ctx.measureText(testLine);
+                if (metrics.width > maxWidth && n > 0) {
+                    if (draw) ctx.fillText(line.trim(), x, startY);
+                    line = words[n] + ' ';
+                    startY += lineHeight;
+                    linesRendered++;
+                } else {
+                    line = testLine;
+                }
+            }
+            if (draw) ctx.fillText(line.trim(), x, startY);
+            linesRendered++;
+            return linesRendered * lineHeight;
+        }
+
+        class Button {
+            constructor(id, text, x, y, width, isOption=false) {
+                this.id = id;
+                this.text = text;
+                this.x = x; this.y = y;
+                this.width = width;
+                this.height = 60;
+                this.isOption = isOption;
+                this.isHovered = false;
+                this.color = '#1e293b';
+                this.hoverColor = '#334155';
+                this.textColor = '#f8fafc';
+                this.onClick = null;
+            }
+
+            calcHeightAndDraw(ctx) {
+                const isMobile = canvas.width < 600;
+                const fontSize = this.isOption ? (isMobile ? 14 : 16) : (isMobile ? 16 : 20);
+                const fontBold = this.isOption ? 'normal' : 'bold';
+                ctx.font = `${fontBold} ${fontSize}px 'Segoe UI', sans-serif`;
+
+                const paddingX = 20;
+                const textWidth = this.width - (paddingX * 2);
+                const lineHeight = fontSize * 1.4;
+
+                let h = wrapText(ctx, this.text, 0, 0, textWidth, lineHeight, false);
+                this.height = Math.max(60, h + 25);
+
+                ctx.fillStyle = this.isHovered ? this.hoverColor : this.color;
+                ctx.beginPath();
+                ctx.roundRect(this.x, this.y, this.width, this.height, 10);
+                ctx.fill();
+                
+                if (this.isHovered) {
+                    ctx.strokeStyle = '#38bdf8';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+
+                ctx.fillStyle = this.textColor;
+                ctx.font = `${fontBold} ${fontSize}px 'Segoe UI', sans-serif`;
+                if (this.isOption) {
+                    ctx.textAlign = 'left';
+                    wrapText(ctx, this.text, this.x + paddingX, this.y + 12, textWidth, lineHeight, true);
+                } else {
+                    ctx.textAlign = 'center';
+                    // Center vertically if text is short
+                    let txtY = h <= lineHeight ? this.y + (this.height/2) - (lineHeight/2) : this.y + 12;
+                    wrapText(ctx, this.text, this.x + this.width/2, txtY, textWidth, lineHeight, true);
+                }
+            }
+
+            checkHover(mx, my) {
+                this.isHovered = (mx >= this.x && mx <= this.x + this.width && my >= this.y && my <= this.y + this.height);
+            }
+        }
+
+        function loadNextQuestion() {
+            if (currentQuestionIndex >= activeQuestions.length) {
+                if (correctAnswersCount === activeQuestions.length) {
+                    if (currentMode === 'transcriptoma') unlockAchievement('transcripter');
+                    if (currentMode === 'proteomica') unlockAchievement('proteomico');
+                    if (currentMode === 'biologia') unlockAchievement('biologo');
+                }
+                checkPangenoma();
+                currentState = STATE_GAMEOVER;
+                buildLayouts();
+                return;
+            }
+
+            const q = activeQuestions[currentQuestionIndex];
+            currentOptions = [
+                { text: q.a, isCorrect: true },
+                { text: q.err[0], isCorrect: false },
+                { text: q.err[1], isCorrect: false },
+                { text: q.err[2], isCorrect: false }
+            ];
+            
+            shuffleArray(currentOptions);
+            timerSeconds = 60.0;
+            lastTime = Date.now();
+            currentState = STATE_PLAYING;
+            buildLayouts();
+        }
+
+        function startQuiz(mode) {
+            currentMode = mode;
+            score = 0;
+            correctAnswersCount = 0;
+            currentQuestionIndex = 0;
+            
+            if (mode === 'transcriptoma') activeQuestions = JSON.parse(JSON.stringify(dbTranscriptoma));
+            else if (mode === 'proteomica') activeQuestions = JSON.parse(JSON.stringify(dbProteomica));
+            else if (mode === 'biologia') activeQuestions = JSON.parse(JSON.stringify(dbBiologia));
+
+            loadNextQuestion();
+        }
+
+        function handleAnswer(isCorrect) {
+            isCurrentAnswerCorrect = isCorrect;
+            timeBonusEarned = 0;
+            
+            if (isCorrect) {
+                timeBonusEarned = Math.floor(timerSeconds) * 15;
+                score += (100 + timeBonusEarned);
+                correctAnswersCount++;
+
+                if (currentQuestionIndex === 0) unlockAchievement('firstBlood');
+                if (timerSeconds >= 55) unlockAchievement('speedster'); 
+            }
+            currentState = STATE_FEEDBACK;
+            buildLayouts();
+        }
+
+        function buildLayouts() {
+            activeButtons = [];
+            const cw = canvas.width;
+            const ch = canvas.height;
+            const cx = cw / 2;
+            const isMobile = cw < 600;
+
+            if (currentState === STATE_MENU) {
+                const btnW = Math.min(320, cw * 0.85);
+                const gap = 15;
+                let sy = ch / 2 - 40;
+                
+                let b1 = new Button('btn_transcriptoma', 'Transcriptoma', cx - btnW/2, sy, btnW);
+                b1.onClick = () => startQuiz('transcriptoma');
+                activeButtons.push(b1);
+                
+                let b2 = new Button('btn_proteomica', 'Proteômica', cx - btnW/2, sy + 75, btnW);
+                b2.color = '#312e81'; b2.hoverColor = '#4338ca'; b2.onClick = () => startQuiz('proteomica');
+                activeButtons.push(b2);
+
+                let b3 = new Button('btn_biologia', 'Biologia de Sistemas', cx - btnW/2, sy + 150, btnW);
+                b3.color = '#064e3b'; b3.hoverColor = '#047857'; b3.onClick = () => startQuiz('biologia');
+                activeButtons.push(b3);
+
+                let b4 = new Button('btn_achievements', '🏆 Conquistas', cx - btnW/2, sy + 225, btnW);
+                b4.color = '#1e293b'; b4.textColor = '#fde047'; b4.onClick = () => { currentState = STATE_ACHIEVEMENTS; buildLayouts(); };
+                activeButtons.push(b4);
+            }
+            else if (currentState === STATE_ACHIEVEMENTS) {
+                const btnW = Math.min(320, cw * 0.85);
+                let btn = new Button('btn_back', 'Voltar ao Menu', cx - btnW/2, ch - 80, btnW);
+                btn.color = '#0284c7'; btn.onClick = () => { currentState = STATE_MENU; buildLayouts(); };
+                activeButtons.push(btn);
+            }
+            else if (currentState === STATE_PLAYING) {
+                const margin = Math.min(30, cw * 0.05);
+                const btnW = cw - (margin * 2);
+                
+                const qFontSize = isMobile ? 18 : 24;
+                ctx.font = `bold ${qFontSize}px 'Segoe UI'`;
+                let qHeight = wrapText(ctx, activeQuestions[currentQuestionIndex].q, 0, 0, btnW, qFontSize * 1.4, false);
+                
+                let currentY = 110 + qHeight + 20; 
+                
+                for (let i = 0; i < currentOptions.length; i++) {
+                    let btn = new Button(`opt_${i}`, currentOptions[i].text, margin, currentY, btnW, true);
+                    btn.calcHeightAndDraw(ctx); // Simulate to get correct height
+                    btn.onClick = () => handleAnswer(currentOptions[i].isCorrect);
+                    activeButtons.push(btn);
+                    currentY += btn.height + 15;
+                }
+            }
+            else if (currentState === STATE_FEEDBACK) {
+                const btnW = Math.min(300, cw * 0.8);
+                let btn = new Button('btn_next', 'Próxima', cx - btnW/2, ch - Math.max(70, ch * 0.1), btnW);
+                btn.color = '#10b981'; btn.hoverColor = '#059669'; btn.onClick = () => { currentQuestionIndex++; loadNextQuestion(); };
+                activeButtons.push(btn);
+            }
+            else if (currentState === STATE_GAMEOVER) {
+                const btnW = Math.min(300, cw * 0.8);
+                let btn = new Button('btn_back', 'Voltar ao Menu', cx - btnW/2, ch - 90, btnW);
+                btn.color = '#3b82f6'; btn.onClick = () => { currentState = STATE_MENU; buildLayouts(); };
+                activeButtons.push(btn);
+            }
+        }
+
+        function drawMenu() {
+            drawBackground();
+            const cw = canvas.width, ch = canvas.height, cx = cw / 2;
+
+            ctx.fillStyle = '#f8fafc';
+            ctx.font = `bold ${Math.min(65, cw * 0.13)}px 'Segoe UI'`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('Genômica II', cx, ch / 2 - 140);
+            
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = 'normal 18px sans-serif';
+            ctx.fillText('Desafio Analítico', cx, ch / 2 - 90);
+
+            activeButtons.forEach(btn => btn.calcHeightAndDraw(ctx));
+        }
+
+        function drawAchievements() {
+            drawBackground();
+            const cw = canvas.width, ch = canvas.height, cx = cw / 2;
+
+            ctx.fillStyle = '#fde047';
+            ctx.font = `bold ${Math.min(35, cw * 0.08)}px 'Segoe UI'`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+            ctx.fillText('Suas Conquistas', cx, 40);
+
+            let startY = 100;
+            const boxW = Math.min(500, cw * 0.9);
+            const boxX = (cw - boxW) / 2;
+            const isMobile = cw < 600;
+            const boxH = isMobile ? 80 : 70;
+
+            for (let key in achievements) {
+                let a = achievements[key];
+                
+                ctx.fillStyle = a.unlocked ? 'rgba(30, 41, 59, 0.9)' : 'rgba(15, 23, 42, 0.6)';
+                ctx.strokeStyle = a.unlocked ? '#38bdf8' : '#334155';
+                ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.roundRect(boxX, startY, boxW, boxH, 8); 
+                ctx.fill(); ctx.stroke();
+
+                ctx.fillStyle = a.unlocked ? '#0284c7' : '#1e293b';
+                ctx.beginPath(); ctx.arc(boxX + 35, startY + boxH/2, 20, 0, Math.PI * 2); ctx.fill();
+
+                ctx.fillStyle = a.unlocked ? '#fef08a' : '#475569';
+                ctx.font = '20px sans-serif';
+                ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                ctx.fillText(a.unlocked ? '★' : '🔒', boxX + 35, startY + boxH/2 + 2);
+
+                ctx.textAlign = 'left';
+                ctx.fillStyle = a.unlocked ? '#f8fafc' : '#64748b';
+                ctx.font = `bold ${isMobile ? 14 : 16}px sans-serif`;
+                ctx.fillText(a.name, boxX + 70, startY + boxH/2 - 12);
+                
+                ctx.fillStyle = a.unlocked ? '#94a3b8' : '#475569';
+                ctx.font = `normal ${isMobile ? 11 : 13}px sans-serif`;
+                ctx.fillText(a.desc, boxX + 70, startY + boxH/2 + 10);
+
+                startY += boxH + (isMobile ? 10 : 15);
+            }
+
+            activeButtons.forEach(btn => btn.calcHeightAndDraw(ctx));
+        }
+
+        function drawPlaying() {
+            drawBackground();
+            const cw = canvas.width, margin = Math.min(30, cw * 0.05);
+
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = 'bold 14px sans-serif';
+            ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+            ctx.fillText(`${currentMode.toUpperCase()} | Q${currentQuestionIndex + 1}/${activeQuestions.length}`, margin, 15);
+            ctx.textAlign = 'right';
+            ctx.fillText(`Pontos: ${score}`, cw - margin, 15);
+
+            const barW = cw - (margin * 2);
+            ctx.fillStyle = '#1e293b';
+            ctx.beginPath(); ctx.roundRect(margin, 40, barW, 10, 5); ctx.fill();
+            
+            let tr = timerSeconds / 60;
+            ctx.fillStyle = tr > 0.25 ? '#38bdf8' : '#ef4444'; 
+            ctx.beginPath(); ctx.roundRect(margin, 40, Math.max(0, barW * tr), 10, 5); ctx.fill();
+
+            ctx.fillStyle = '#f8fafc';
+            ctx.textAlign = 'center';
+            ctx.fillText(`${Math.ceil(timerSeconds)}s`, cw / 2, 55);
+
+            const q = activeQuestions[currentQuestionIndex];
+            ctx.fillStyle = '#ffffff';
+            ctx.textAlign = 'left';
+            const isMobile = cw < 600;
+            const qFontSize = isMobile ? 18 : 24;
+            ctx.font = `bold ${qFontSize}px 'Segoe UI'`;
+            wrapText(ctx, q.q, margin, 90, cw - (margin * 2), qFontSize * 1.4);
+
+            activeButtons.forEach(btn => btn.calcHeightAndDraw(ctx));
+        }
+
+        function drawFeedback() {
+            drawBackground();
+            const cw = canvas.width, ch = canvas.height;
+            const margin = Math.min(20, cw * 0.05);
+            const boxW = Math.min(800, cw - margin * 2);
+            const boxX = (cw - boxW) / 2;
+            const isMobile = cw < 600;
+            
+            ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+            let title = isCurrentAnswerCorrect ? "Correto!" : (timerSeconds<=0 ? "Tempo Esgotado" : "Incorreto");
+            ctx.fillStyle = isCurrentAnswerCorrect ? '#10b981' : '#ef4444';
+            ctx.font = `bold ${Math.min(45, cw * 0.1)}px 'Segoe UI'`;
+            ctx.fillText(title, cw / 2, Math.max(20, ch * 0.05));
+            
+            let curY = Math.max(20, ch * 0.05) + 50;
+
+            if (isCurrentAnswerCorrect) {
+                ctx.fillStyle = '#60a5fa';
+                ctx.font = `bold ${isMobile ? 14 : 18}px sans-serif`;
+                ctx.fillText(`+100 pts | Bônus de Tempo: +${timeBonusEarned}`, cw / 2, curY);
+                curY += 30;
+            } else { curY += 10; }
+
+            ctx.textAlign = 'left';
+            const q = activeQuestions[currentQuestionIndex];
+            
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = `bold ${isMobile ? 14 : 16}px sans-serif`;
+            ctx.fillText("Resposta correta:", boxX, curY);
+            curY += 20;
+            
+            ctx.fillStyle = '#34d399'; 
+            ctx.font = `bold ${isMobile ? 16 : 18}px sans-serif`;
+            let ansHeight = wrapText(ctx, q.a, boxX, curY, boxW, isMobile ? 22 : 26);
+            curY += ansHeight + 20;
+
+            ctx.fillStyle = '#38bdf8';
+            ctx.font = `bold ${isMobile ? 15 : 17}px sans-serif`;
+            ctx.fillText("Justificativa Teórica:", boxX, curY);
+            curY += 25;
+            
+            // Caixa protetora da justificativa
+            ctx.font = `normal ${isMobile ? 15 : 17}px sans-serif`;
+            let justH = wrapText(ctx, q.just, boxX, curY, boxW - 20, isMobile ? 22 : 26, false);
+            
+            ctx.fillStyle = 'rgba(30, 41, 59, 0.7)';
+            ctx.strokeStyle = '#475569'; ctx.lineWidth = 1;
+            ctx.beginPath(); ctx.roundRect(boxX - 10, curY - 10, boxW + 20, justH + 20, 8);
+            ctx.fill(); ctx.stroke();
+
+            ctx.fillStyle = '#f8fafc';
+            wrapText(ctx, q.just, boxX, curY, boxW - 20, isMobile ? 22 : 26);
+
+            activeButtons.forEach(btn => btn.calcHeightAndDraw(ctx));
+        }
+
+        function drawGameOver() {
+            drawBackground();
+            const cw = canvas.width, ch = canvas.height, cx = cw / 2;
+
+            ctx.fillStyle = '#38bdf8';
+            ctx.font = `bold ${Math.min(50, cw * 0.09)}px 'Segoe UI'`;
+            ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+            ctx.fillText('Avaliação Concluída', cx, Math.max(50, ch * 0.1));
+
+            ctx.fillStyle = '#f8fafc';
+            ctx.font = 'bold 36px sans-serif';
+            ctx.fillText(`Pontos: ${score}`, cx, Math.max(50, ch * 0.1) + 80);
+
+            let acc = Math.round((correctAnswersCount / activeQuestions.length) * 100);
+            ctx.fillStyle = acc === 100 ? '#4ade80' : (acc >= 70 ? '#fde047' : '#ef4444');
+            ctx.font = 'bold 22px sans-serif';
+            ctx.fillText(`Acertos: ${correctAnswersCount} de ${activeQuestions.length} (${acc}%)`, cx, Math.max(50, ch * 0.1) + 140);
+
+            if(acc === 100) {
+                ctx.fillStyle = '#fef08a'; ctx.font = 'bold 18px sans-serif';
+                ctx.fillText("⭐ Domínio Absoluto do Conteúdo ⭐", cx, Math.max(50, ch * 0.1) + 190);
+            }
+
+            activeButtons.forEach(btn => btn.calcHeightAndDraw(ctx));
+        }
+
+        function drawNotification() {
+            if (!currentNotification) return;
+
+            const cw = canvas.width;
+            const nw = Math.min(340, cw * 0.9);
+            const x = (cw - nw) / 2;
+            
+            let y = 20; let alpha = 1;
+            if (notificationTimer > 200) {
+                y = 20 - (220 - notificationTimer) * 2;
+                alpha = (220 - notificationTimer) / 20;
+            } else if (notificationTimer < 20) {
+                y = 20 - (20 - notificationTimer) * 2;
+                alpha = notificationTimer / 20;
+            }
+
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+            
+            ctx.fillStyle = '#0284c7'; 
+            ctx.shadowColor = 'rgba(0,0,0,0.5)'; ctx.shadowBlur = 10;
+            ctx.beginPath(); ctx.roundRect(x, y, nw, 65, 8); ctx.fill();
+            
+            ctx.fillStyle = '#fef08a'; ctx.shadowBlur = 0; ctx.font = '24px sans-serif';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            ctx.fillText('🏆', x + 30, y + 32);
+
+            ctx.fillStyle = '#ffffff'; ctx.textAlign = 'left';
+            ctx.font = 'bold 15px sans-serif';
+            ctx.fillText(currentNotification.name + ' Desbloqueada!', x + 55, y + 25);
+            
+            ctx.fillStyle = '#bae6fd'; ctx.font = '12px sans-serif';
+            ctx.fillText(currentNotification.desc, x + 55, y + 45);
+
+            ctx.restore();
+        }
+
+        function gameLoop() {
+            let now = Date.now();
+            let dt = (now - lastTime) / 1000;
+            lastTime = now;
+
+            if (currentState === STATE_PLAYING) {
+                timerSeconds -= dt;
+                if (timerSeconds <= 0) {
+                    timerSeconds = 0;
+                    handleAnswer(false);
+                }
+            }
+
+            updateNotifications();
+
+            if (currentState === STATE_MENU) drawMenu();
+            else if (currentState === STATE_ACHIEVEMENTS) drawAchievements();
+            else if (currentState === STATE_PLAYING) drawPlaying();
+            else if (currentState === STATE_FEEDBACK) drawFeedback();
+            else if (currentState === STATE_GAMEOVER) drawGameOver();
+
+            drawNotification();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function updateMousePos(e) {
+            const rect = canvas.getBoundingClientRect();
+            let cX = e.touches ? e.touches[0].clientX : e.clientX;
+            let cY = e.touches ? e.touches[0].clientY : e.clientY;
+            mouseX = (cX - rect.left) * (canvas.width / rect.width);
+            mouseY = (cY - rect.top) * (canvas.height / rect.height);
+            activeButtons.forEach(btn => btn.checkHover(mouseX, mouseY));
+        }
+
+        function handleInteract(e) {
+            e.preventDefault(); 
+            updateMousePos(e);
+            for (let i = 0; i < activeButtons.length; i++) {
+                if (activeButtons[i].isHovered && activeButtons[i].onClick) {
+                    activeButtons[i].onClick();
+                    break;
+                }
+            }
+        }
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            initParticles();
+            buildLayouts();
+        }
+
+        window.addEventListener('resize', resizeCanvas);
+        canvas.addEventListener('mousemove', updateMousePos);
+        canvas.addEventListener('mousedown', handleInteract);
+        canvas.addEventListener('touchstart', (e) => { updateMousePos(e); }, {passive: false});
+        canvas.addEventListener('touchend', handleInteract, {passive: false});
+
+        window.onload = function() {
+            document.getElementById('loading').style.display = 'none';
+            lastTime = Date.now();
+            resizeCanvas();
+            requestAnimationFrame(gameLoop);
+        };
+    </script>
+</body>
+</html>
